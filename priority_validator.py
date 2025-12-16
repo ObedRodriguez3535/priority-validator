@@ -144,10 +144,7 @@ def collect_dns_records(domain: str, max_nodes: int = 300) -> List[DNSRecord]:
     return records
 
 def build_targets(records: List[DNSRecord]) -> Set[str]:
-    targets: Set[str] = set()
-    for r in records:
-        targets.add(r.value)
-    return targets
+    return {r.value for r in records}
 
 def check_services_for_target(source_domain: str, target: str) -> List[ServiceCheck]:
     checks: List[ServiceCheck] = []
@@ -204,12 +201,76 @@ def check_services_for_target(source_domain: str, target: str) -> List[ServiceCh
 
     return checks
 
+def format_human(domain: str, records: List[DNSRecord], checks: List[ServiceCheck]) -> str:
+    lines: List[str] = []
+    lines.append(f"Domain: {domain}")
+    lines.append("")
+
+    cname = [r for r in records if r.rtype == "CNAME"]
+    a = [r for r in records if r.rtype == "A"]
+    aaaa = [r for r in records if r.rtype == "AAAA"]
+
+    lines.append("Discovered DNS records:")
+    if not records:
+        lines.append("  (none)")
+    else:
+        for r in cname:
+            lines.append(f"  CNAME  {r.owner} -> {r.value}")
+        for r in a:
+            lines.append(f"  A      {r.owner} -> {r.value}")
+        for r in aaaa:
+            lines.append(f"  AAAA   {r.owner} -> {r.value}")
+    lines.append("")
+
+    by_target: Dict[str, List[ServiceCheck]] = {}
+    for c in checks:
+        by_target.setdefault(c.target, []).append(c)
+
+    def proto_sort_key(c: ServiceCheck) -> Tuple[int, int]:
+        p = 0 if c.protocol == "HTTP" else 1
+        return (p, c.port)
+
+    for target in sorted(by_target.keys()):
+        lines.append(f"Target: {target}")
+        entries = sorted(by_target[target], key=proto_sort_key)
+        for c in entries:
+            label = "HTTP" if (c.protocol == "HTTP" and c.port == 80) else \
+                    "HTTPS" if (c.protocol == "HTTP" and c.port == 443) else \
+                    "MySQL"
+            status = "OPEN" if c.open else "CLOSED"
+            if c.protocol == "HTTP" and c.port == 443 and c.open:
+                if c.tls_present and c.cert:
+                    lines.append(f"  {label}:{c.port:<5} {status} (TLS)")
+                    lines.append("    Certificate:")
+                    lines.append(f"      Valid from : {c.cert.valid_from or 'unknown'}")
+                    lines.append(f"      Valid to   : {c.cert.valid_to or 'unknown'}")
+                    lines.append(f"      Fingerprint: {c.cert.fingerprint_sha256 or 'unknown'}")
+                else:
+                    msg = c.error or "no certificate"
+                    lines.append(f"  {label}:{c.port:<5} {status} (NO TLS CERTIFICATE: {msg})")
+            elif c.protocol == "MySQL" and c.open:
+                if c.tls_present and c.cert:
+                    lines.append(f"  {label}:{c.port:<5} {status} (TLS)")
+                    lines.append("    Certificate:")
+                    lines.append(f"      Valid from : {c.cert.valid_from or 'unknown'}")
+                    lines.append(f"      Valid to   : {c.cert.valid_to or 'unknown'}")
+                    lines.append(f"      Fingerprint: {c.cert.fingerprint_sha256 or 'unknown'}")
+                else:
+                    msg = c.error or "no certificate"
+                    lines.append(f"  {label}:{c.port:<5} {status} (NO TLS CERTIFICATE: {msg})")
+            else:
+                lines.append(f"  {label}:{c.port:<5} {status}")
+        lines.append("")
+
+    return "\n".join(lines)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--domains", nargs="+")
     parser.add_argument("--domains-file")
     parser.add_argument("--max-nodes", type=int, default=300)
     parser.add_argument("--out", default="-")
+    parser.add_argument("--format", choices=["jsonl", "human"], default="jsonl")
     args = parser.parse_args()
 
     domains: List[str] = []
@@ -229,22 +290,29 @@ def main():
 
     out_f = open(args.out, "w") if args.out != "-" else None
 
-    def emit(obj: Dict):
-        line = json.dumps(obj)
+    def write_line(s: str):
         if out_f:
-            out_f.write(line + "\n")
+            out_f.write(s + "\n")
         else:
-            print(line)
+            print(s)
 
     for domain in domains:
         records = collect_dns_records(domain, args.max_nodes)
-        for r in records:
-            emit({"type": "dns_record", **asdict(r)})
-
         targets = build_targets(records)
+
+        all_checks: List[ServiceCheck] = []
         for target in sorted(targets):
-            for check in check_services_for_target(domain, target):
-                emit({"type": "service_check", **asdict(check)})
+            all_checks.extend(check_services_for_target(domain, target))
+
+        if args.format == "human":
+            write_line(format_human(domain, records, all_checks))
+        else:
+            for r in records:
+                line = json.dumps({"type": "dns_record", **asdict(r)})
+                write_line(line)
+            for c in all_checks:
+                line = json.dumps({"type": "service_check", **asdict(c)})
+                write_line(line)
 
     if out_f:
         out_f.close()
