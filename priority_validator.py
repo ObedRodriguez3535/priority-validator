@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import csv
 import json
 import re
 import socket
@@ -264,13 +265,64 @@ def format_human(domain: str, records: List[DNSRecord], checks: List[ServiceChec
 
     return "\n".join(lines)
 
+def write_single_csv(out_path: str, domain: str, records: List[DNSRecord], checks: List[ServiceCheck]) -> str:
+    by_target_dns: Dict[str, List[DNSRecord]] = {}
+    for r in records:
+        by_target_dns.setdefault(r.value, []).append(r)
+
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "source_domain",
+            "dns_owner",
+            "dns_rtype",
+            "dns_value",
+            "target",
+            "protocol",
+            "port",
+            "open",
+            "tls_present",
+            "valid_from",
+            "valid_to",
+            "fingerprint_sha256",
+            "error",
+        ])
+
+        for c in checks:
+            related = by_target_dns.get(c.target) or []
+            if not related:
+                related = [DNSRecord(domain, domain, "", c.target)]
+
+            valid_from = c.cert.valid_from if c.cert else ""
+            valid_to = c.cert.valid_to if c.cert else ""
+            fp = c.cert.fingerprint_sha256 if c.cert else ""
+
+            for r in related:
+                w.writerow([
+                    domain,
+                    r.owner,
+                    r.rtype,
+                    r.value,
+                    c.target,
+                    c.protocol,
+                    c.port,
+                    c.open,
+                    c.tls_present,
+                    valid_from,
+                    valid_to,
+                    fp,
+                    c.error or "",
+                ])
+
+    return out_path
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--domains", nargs="+")
     parser.add_argument("--domains-file")
     parser.add_argument("--max-nodes", type=int, default=300)
     parser.add_argument("--out", default="-")
-    parser.add_argument("--format", choices=["jsonl", "human"], default="jsonl")
+    parser.add_argument("--format", choices=["jsonl", "human", "csv"], default="jsonl")
     args = parser.parse_args()
 
     domains: List[str] = []
@@ -288,7 +340,7 @@ def main():
     if not domains:
         domains = ["example.com"]
 
-    out_f = open(args.out, "w") if args.out != "-" else None
+    out_f = open(args.out, "w", encoding="utf-8") if (args.out != "-" and args.format != "csv") else None
 
     def write_line(s: str):
         if out_f:
@@ -306,13 +358,23 @@ def main():
 
         if args.format == "human":
             write_line(format_human(domain, records, all_checks))
+        elif args.format == "csv":
+            if args.out == "-":
+                raise SystemExit("For --format csv, provide --out <filename.csv>")
+            out_path = args.out
+            if len(domains) > 1:
+                if out_path.endswith(".csv"):
+                    base = out_path[:-4]
+                    out_path = f"{base}.{domain}.csv"
+                else:
+                    out_path = f"{out_path}.{domain}.csv"
+            write_single_csv(out_path, domain, records, all_checks)
+            write_line(f"Wrote: {out_path}")
         else:
             for r in records:
-                line = json.dumps({"type": "dns_record", **asdict(r)})
-                write_line(line)
+                write_line(json.dumps({"type": "dns_record", **asdict(r)}))
             for c in all_checks:
-                line = json.dumps({"type": "service_check", **asdict(c)})
-                write_line(line)
+                write_line(json.dumps({"type": "service_check", **asdict(c)}))
 
     if out_f:
         out_f.close()
