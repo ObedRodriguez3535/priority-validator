@@ -13,6 +13,21 @@ import dns.resolver
 HTTP_PORTS = [80, 443]
 MYSQL_PORTS = [3306]
 
+DEFAULT_WORDLIST = [
+    "www",
+    "api",
+    "admin",
+    "mail",
+    "dev",
+    "staging",
+    "test",
+    "app",
+    "portal",
+    "login",
+    "auth",
+    "dashboard",
+]
+
 PEM_CERT_RE = re.compile(
     rb"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----",
     re.DOTALL
@@ -49,11 +64,15 @@ def is_port_open(host: str, port: int, timeout: float = 3.0) -> bool:
     except Exception:
         return False
 
-def run_openssl_get_cert(host: str, port: int, protocol: str, timeout: int = 12) -> Tuple[Optional[bytes], Optional[str]]:
+def run_openssl_get_cert(connect_host: str, port: int, protocol: str, server_name: Optional[str], timeout: int = 12) -> Tuple[Optional[bytes], Optional[str]]:
     if protocol == "HTTP" and port == 443:
-        cmd = ["openssl", "s_client", "-connect", f"{host}:{port}", "-servername", host, "-showcerts"]
+        cmd = ["openssl", "s_client", "-connect", f"{connect_host}:{port}", "-showcerts"]
+        if server_name:
+            cmd += ["-servername", server_name]
     elif protocol == "MySQL" and port == 3306:
-        cmd = ["openssl", "s_client", "-starttls", "mysql", "-connect", f"{host}:{port}", "-showcerts"]
+        cmd = ["openssl", "s_client", "-starttls", "mysql", "-connect", f"{connect_host}:{port}", "-showcerts"]
+        if server_name:
+            cmd += ["-servername", server_name]
     else:
         return None, "TLS not applicable"
 
@@ -111,7 +130,7 @@ def parse_cert_info(cert_pem: bytes) -> Tuple[Optional[CertInfo], Optional[str]]
     return CertInfo(valid_from, valid_to, fingerprint), None
 
 def resolve_one(hostname: str, resolver: dns.resolver.Resolver) -> List[Tuple[str, str]]:
-    results = []
+    results: List[Tuple[str, str]] = []
     for rtype in ["A", "AAAA", "CNAME"]:
         try:
             answers = resolver.resolve(hostname, rtype)
@@ -124,9 +143,9 @@ def resolve_one(hostname: str, resolver: dns.resolver.Resolver) -> List[Tuple[st
             continue
     return results
 
-def collect_dns_records(domain: str, max_nodes: int = 300) -> List[DNSRecord]:
+def collect_dns_records_for_roots(source_domain: str, roots: List[str], max_nodes: int = 300) -> List[DNSRecord]:
     resolver = dns.resolver.Resolver()
-    queue = [domain]
+    queue: List[str] = list(roots)
     visited: Set[str] = set()
     records: List[DNSRecord] = []
 
@@ -138,17 +157,64 @@ def collect_dns_records(domain: str, max_nodes: int = 300) -> List[DNSRecord]:
 
         resolved = resolve_one(host, resolver)
         for rtype, value in resolved:
-            records.append(DNSRecord(domain, host, rtype, value))
+            records.append(DNSRecord(source_domain, host, rtype, value))
             if rtype == "CNAME" and value not in visited:
                 queue.append(value)
 
     return records
 
+def load_wordlist(path: Optional[str], use_default: bool) -> List[str]:
+    words: List[str] = []
+    if use_default:
+        words.extend(DEFAULT_WORDLIST)
+    if path:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                w = line.strip()
+                if not w or w.startswith("#"):
+                    continue
+                words.append(w)
+    seen: Set[str] = set()
+    out: List[str] = []
+    for w in words:
+        w = w.strip().lower().strip(".")
+        if not w or w in seen:
+            continue
+        seen.add(w)
+        out.append(w)
+    return out
+
+def discover_subdomains(domain: str, words: List[str]) -> List[str]:
+    resolver = dns.resolver.Resolver()
+    found: List[str] = []
+    for w in words:
+        host = f"{w}.{domain}"
+        ok = False
+        for rtype in ("A", "AAAA", "CNAME"):
+            try:
+                resolver.resolve(host, rtype)
+                ok = True
+                break
+            except Exception:
+                continue
+        if ok:
+            found.append(host)
+    return found
+
 def build_targets(records: List[DNSRecord]) -> Set[str]:
     return {r.value for r in records}
 
-def check_services_for_target(source_domain: str, target: str) -> List[ServiceCheck]:
+def build_target_to_owners(records: List[DNSRecord]) -> Dict[str, Set[str]]:
+    m: Dict[str, Set[str]] = {}
+    for r in records:
+        m.setdefault(r.value, set()).add(r.owner)
+    return m
+
+def check_services_for_target(source_domain: str, target: str, owners: Set[str]) -> List[ServiceCheck]:
     checks: List[ServiceCheck] = []
+    server_name = None
+    if owners:
+        server_name = sorted(owners)[0]
 
     for port in HTTP_PORTS:
         open_ = is_port_open(target, port)
@@ -157,7 +223,7 @@ def check_services_for_target(source_domain: str, target: str) -> List[ServiceCh
         error = None
 
         if open_ and port == 443:
-            cert_pem, err = run_openssl_get_cert(target, port, "HTTP")
+            cert_pem, err = run_openssl_get_cert(target, port, "HTTP", server_name)
             if cert_pem:
                 cert_info, error = parse_cert_info(cert_pem)
                 tls_present = cert_info is not None
@@ -165,14 +231,14 @@ def check_services_for_target(source_domain: str, target: str) -> List[ServiceCh
                 error = err
 
         checks.append(ServiceCheck(
-            source_domain,
-            target,
-            "HTTP",
-            port,
-            open_,
-            tls_present,
-            cert_info,
-            error
+            source_domain=source_domain,
+            target=target,
+            protocol="HTTP",
+            port=port,
+            open=open_,
+            tls_present=tls_present,
+            cert=cert_info,
+            error=error
         ))
 
     for port in MYSQL_PORTS:
@@ -181,8 +247,8 @@ def check_services_for_target(source_domain: str, target: str) -> List[ServiceCh
         cert_info = None
         error = None
 
-        if open_:
-            cert_pem, err = run_openssl_get_cert(target, port, "MySQL")
+        if open_ and port == 3306:
+            cert_pem, err = run_openssl_get_cert(target, port, "MySQL", server_name)
             if cert_pem:
                 cert_info, error = parse_cert_info(cert_pem)
                 tls_present = cert_info is not None
@@ -190,14 +256,14 @@ def check_services_for_target(source_domain: str, target: str) -> List[ServiceCh
                 error = err
 
         checks.append(ServiceCheck(
-            source_domain,
-            target,
-            "MySQL",
-            port,
-            open_,
-            tls_present,
-            cert_info,
-            error
+            source_domain=source_domain,
+            target=target,
+            protocol="MySQL",
+            port=port,
+            open=open_,
+            tls_present=tls_present,
+            cert=cert_info,
+            error=error
         ))
 
     return checks
@@ -239,6 +305,7 @@ def format_human(domain: str, records: List[DNSRecord], checks: List[ServiceChec
                     "HTTPS" if (c.protocol == "HTTP" and c.port == 443) else \
                     "MySQL"
             status = "OPEN" if c.open else "CLOSED"
+
             if c.protocol == "HTTP" and c.port == 443 and c.open:
                 if c.tls_present and c.cert:
                     lines.append(f"  {label}:{c.port:<5} {status} (TLS)")
@@ -306,8 +373,8 @@ def write_single_csv(out_path: str, domain: str, records: List[DNSRecord], check
                     c.target,
                     c.protocol,
                     c.port,
-                    c.open,
-                    c.tls_present,
+                    str(c.open).upper(),
+                    str(c.tls_present).upper(),
                     valid_from,
                     valid_to,
                     fp,
@@ -323,6 +390,8 @@ def main():
     parser.add_argument("--max-nodes", type=int, default=300)
     parser.add_argument("--out", default="-")
     parser.add_argument("--format", choices=["jsonl", "human", "csv"], default="jsonl")
+    parser.add_argument("--wordlist", help="Path to a wordlist file (one subdomain label per line)")
+    parser.add_argument("--wordlist-default", action="store_true")
     args = parser.parse_args()
 
     domains: List[str] = []
@@ -331,14 +400,16 @@ def main():
         domains.extend(args.domains)
 
     if args.domains_file:
-        with open(args.domains_file, "r") as f:
+        with open(args.domains_file, "r", encoding="utf-8") as f:
             for line in f:
                 d = line.strip()
-                if d:
+                if d and not d.startswith("#"):
                     domains.append(d)
 
     if not domains:
         domains = ["example.com"]
+
+    words = load_wordlist(args.wordlist, args.wordlist_default)
 
     out_f = open(args.out, "w", encoding="utf-8") if (args.out != "-" and args.format != "csv") else None
 
@@ -349,12 +420,26 @@ def main():
             print(s)
 
     for domain in domains:
-        records = collect_dns_records(domain, args.max_nodes)
+        roots: List[str] = [domain]
+
+        if words:
+            roots.extend(discover_subdomains(domain, words))
+
+        seen_roots: Set[str] = set()
+        roots_unique: List[str] = []
+        for r in roots:
+            if r not in seen_roots:
+                seen_roots.add(r)
+                roots_unique.append(r)
+
+        records = collect_dns_records_for_roots(domain, roots_unique, args.max_nodes)
         targets = build_targets(records)
+        target_to_owners = build_target_to_owners(records)
 
         all_checks: List[ServiceCheck] = []
         for target in sorted(targets):
-            all_checks.extend(check_services_for_target(domain, target))
+            owners = target_to_owners.get(target, set())
+            all_checks.extend(check_services_for_target(domain, target, owners))
 
         if args.format == "human":
             write_line(format_human(domain, records, all_checks))
