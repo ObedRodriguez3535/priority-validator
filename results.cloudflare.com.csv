@@ -1,0 +1,13 @@
+source_domain,dns_owner,dns_rtype,dns_value,target,protocol,port,open,tls_present,valid_from,valid_to,fingerprint_sha256,error
+cloudflare.com,cloudflare.com,A,104.16.132.229,104.16.132.229,HTTP,80,TRUE,FALSE,,,,
+cloudflare.com,cloudflare.com,A,104.16.132.229,104.16.132.229,HTTP,443,TRUE,TRUE,Nov 14 20:28:36 2025 GMT,Feb 12 21:28:32 2026 GMT,DA:D4:16:22:D8:4A:85:57:3E:24:D9:E6:69:06:04:86:56:70:25:90:55:A6:35:A0:1F:6E:D7:EA:97:10:07:AB,
+cloudflare.com,cloudflare.com,A,104.16.132.229,104.16.132.229,MySQL,3306,FALSE,FALSE,,,,
+cloudflare.com,cloudflare.com,A,104.16.133.229,104.16.133.229,HTTP,80,TRUE,FALSE,,,,
+cloudflare.com,cloudflare.com,A,104.16.133.229,104.16.133.229,HTTP,443,TRUE,TRUE,Nov 14 20:28:36 2025 GMT,Feb 12 21:28:32 2026 GMT,DA:D4:16:22:D8:4A:85:57:3E:24:D9:E6:69:06:04:86:56:70:25:90:55:A6:35:A0:1F:6E:D7:EA:97:10:07:AB,
+cloudflare.com,cloudflare.com,A,104.16.133.229,104.16.133.229,MySQL,3306,FALSE,FALSE,,,,
+cloudflare.com,cloudflare.com,AAAA,2606:4700::6810:84e5,2606:4700::6810:84e5,HTTP,80,TRUE,FALSE,,,,
+cloudflare.com,cloudflare.com,AAAA,2606:4700::6810:84e5,2606:4700::6810:84e5,HTTP,443,TRUE,FALSE,,,,no certificate found
+cloudflare.com,cloudflare.com,AAAA,2606:4700::6810:84e5,2606:4700::6810:84e5,MySQL,3306,FALSE,FALSE,,,,
+cloudflare.com,cloudflare.com,AAAA,2606:4700::6810:85e5,2606:4700::6810:85e5,HTTP,80,TRUE,FALSE,,,,
+cloudflare.com,cloudflare.com,AAAA,2606:4700::6810:85e5,2606:4700::6810:85e5,HTTP,443,TRUE,FALSE,,,,no certificate found
+cloudflare.com,cloudflare.com,AAAA,2606:4700::6810:85e5,2606:4700::6810:85e5,MySQL,3306,FALSE,FALSE,,,,

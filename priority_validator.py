@@ -174,6 +174,7 @@ def load_wordlist(path: Optional[str], use_default: bool) -> List[str]:
                 if not w or w.startswith("#"):
                     continue
                 words.append(w)
+
     seen: Set[str] = set()
     out: List[str] = []
     for w in words:
@@ -212,9 +213,7 @@ def build_target_to_owners(records: List[DNSRecord]) -> Dict[str, Set[str]]:
 
 def check_services_for_target(source_domain: str, target: str, owners: Set[str]) -> List[ServiceCheck]:
     checks: List[ServiceCheck] = []
-    server_name = None
-    if owners:
-        server_name = sorted(owners)[0]
+    server_name = sorted(owners)[0] if owners else None
 
     for port in HTTP_PORTS:
         open_ = is_port_open(target, port)
@@ -332,56 +331,53 @@ def format_human(domain: str, records: List[DNSRecord], checks: List[ServiceChec
 
     return "\n".join(lines)
 
-def write_single_csv(out_path: str, domain: str, records: List[DNSRecord], checks: List[ServiceCheck]) -> str:
+def write_csv_header(w: csv.writer) -> None:
+    w.writerow([
+        "source_domain",
+        "dns_owner",
+        "dns_rtype",
+        "dns_value",
+        "target",
+        "protocol",
+        "port",
+        "open",
+        "tls_present",
+        "valid_from",
+        "valid_to",
+        "fingerprint_sha256",
+        "error",
+    ])
+
+def write_csv_rows(w: csv.writer, records: List[DNSRecord], checks: List[ServiceCheck]) -> None:
     by_target_dns: Dict[str, List[DNSRecord]] = {}
     for r in records:
         by_target_dns.setdefault(r.value, []).append(r)
 
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow([
-            "source_domain",
-            "dns_owner",
-            "dns_rtype",
-            "dns_value",
-            "target",
-            "protocol",
-            "port",
-            "open",
-            "tls_present",
-            "valid_from",
-            "valid_to",
-            "fingerprint_sha256",
-            "error",
-        ])
+    for c in checks:
+        related = by_target_dns.get(c.target) or []
+        if not related:
+            related = [DNSRecord(c.source_domain, c.source_domain, "", c.target)]
 
-        for c in checks:
-            related = by_target_dns.get(c.target) or []
-            if not related:
-                related = [DNSRecord(domain, domain, "", c.target)]
+        valid_from = c.cert.valid_from if c.cert else ""
+        valid_to = c.cert.valid_to if c.cert else ""
+        fp = c.cert.fingerprint_sha256 if c.cert else ""
 
-            valid_from = c.cert.valid_from if c.cert else ""
-            valid_to = c.cert.valid_to if c.cert else ""
-            fp = c.cert.fingerprint_sha256 if c.cert else ""
-
-            for r in related:
-                w.writerow([
-                    domain,
-                    r.owner,
-                    r.rtype,
-                    r.value,
-                    c.target,
-                    c.protocol,
-                    c.port,
-                    str(c.open).upper(),
-                    str(c.tls_present).upper(),
-                    valid_from,
-                    valid_to,
-                    fp,
-                    c.error or "",
-                ])
-
-    return out_path
+        for r in related:
+            w.writerow([
+                c.source_domain,
+                r.owner,
+                r.rtype,
+                r.value,
+                c.target,
+                c.protocol,
+                c.port,
+                "TRUE" if c.open else "FALSE",
+                "TRUE" if c.tls_present else "FALSE",
+                valid_from,
+                valid_to,
+                fp,
+                c.error or "",
+            ])
 
 def main():
     parser = argparse.ArgumentParser()
@@ -395,7 +391,6 @@ def main():
     args = parser.parse_args()
 
     domains: List[str] = []
-
     if args.domains:
         domains.extend(args.domains)
 
@@ -411,6 +406,9 @@ def main():
 
     words = load_wordlist(args.wordlist, args.wordlist_default)
 
+    if args.format == "csv" and args.out == "-":
+        raise SystemExit("For --format csv, provide --out <filename.csv>")
+
     out_f = open(args.out, "w", encoding="utf-8") if (args.out != "-" and args.format != "csv") else None
 
     def write_line(s: str):
@@ -419,9 +417,39 @@ def main():
         else:
             print(s)
 
+    if args.format == "csv":
+        with open(args.out, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            write_csv_header(w)
+
+            for domain in domains:
+                roots: List[str] = [domain]
+                if words:
+                    roots.extend(discover_subdomains(domain, words))
+
+                seen_roots: Set[str] = set()
+                roots_unique: List[str] = []
+                for r in roots:
+                    if r not in seen_roots:
+                        seen_roots.add(r)
+                        roots_unique.append(r)
+
+                records = collect_dns_records_for_roots(domain, roots_unique, args.max_nodes)
+                targets = build_targets(records)
+                target_to_owners = build_target_to_owners(records)
+
+                all_checks: List[ServiceCheck] = []
+                for target in sorted(targets):
+                    owners = target_to_owners.get(target, set())
+                    all_checks.extend(check_services_for_target(domain, target, owners))
+
+                write_csv_rows(w, records, all_checks)
+
+        print(f"Wrote: {args.out}")
+        return
+
     for domain in domains:
         roots: List[str] = [domain]
-
         if words:
             roots.extend(discover_subdomains(domain, words))
 
@@ -443,18 +471,6 @@ def main():
 
         if args.format == "human":
             write_line(format_human(domain, records, all_checks))
-        elif args.format == "csv":
-            if args.out == "-":
-                raise SystemExit("For --format csv, provide --out <filename.csv>")
-            out_path = args.out
-            if len(domains) > 1:
-                if out_path.endswith(".csv"):
-                    base = out_path[:-4]
-                    out_path = f"{base}.{domain}.csv"
-                else:
-                    out_path = f"{out_path}.{domain}.csv"
-            write_single_csv(out_path, domain, records, all_checks)
-            write_line(f"Wrote: {out_path}")
         else:
             for r in records:
                 write_line(json.dumps({"type": "dns_record", **asdict(r)}))

@@ -1,0 +1,4 @@
+source_domain,dns_owner,dns_rtype,dns_value,target,protocol,port,open,tls_present,valid_from,valid_to,fingerprint_sha256,error
+github.com,github.com,A,140.82.113.3,140.82.113.3,HTTP,80,TRUE,FALSE,,,,
+github.com,github.com,A,140.82.113.3,140.82.113.3,HTTP,443,TRUE,TRUE,Feb  5 00:00:00 2025 GMT,Feb  5 23:59:59 2026 GMT,B8:BB:81:87:68:33:87:39:42:04:5A:8D:F8:F0:62:19:E0:06:02:EB:CB:43:84:C7:AB:C2:4F:18:37:9C:87:F5,
+github.com,github.com,A,140.82.113.3,140.82.113.3,MySQL,3306,FALSE,FALSE,,,,

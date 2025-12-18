@@ -1,0 +1,7 @@
+source_domain,dns_owner,dns_rtype,dns_value,target,protocol,port,open,tls_present,valid_from,valid_to,fingerprint_sha256,error
+google.com,google.com,A,172.217.2.142,172.217.2.142,HTTP,80,TRUE,FALSE,,,,
+google.com,google.com,A,172.217.2.142,172.217.2.142,HTTP,443,TRUE,TRUE,Dec  3 15:50:09 2025 GMT,Feb 25 15:50:08 2026 GMT,01:93:34:8C:59:AC:52:25:54:81:E8:50:E1:E9:8A:11:1F:3C:82:81:00:B2:90:35:17:5F:25:9C:C2:2D:D2:E2,
+google.com,google.com,A,172.217.2.142,172.217.2.142,MySQL,3306,FALSE,FALSE,,,,
+google.com,google.com,AAAA,2607:f8b0:4012:805::200e,2607:f8b0:4012:805::200e,HTTP,80,TRUE,FALSE,,,,
+google.com,google.com,AAAA,2607:f8b0:4012:805::200e,2607:f8b0:4012:805::200e,HTTP,443,TRUE,FALSE,,,,no certificate found
+google.com,google.com,AAAA,2607:f8b0:4012:805::200e,2607:f8b0:4012:805::200e,MySQL,3306,FALSE,FALSE,,,,
